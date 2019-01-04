@@ -26,12 +26,7 @@ local fmt          = string.format
 local sub          = string.sub
 
 
-local WARN                          = ngx.WARN
-local SQL_INFORMATION_SCHEMA_TABLES = [[
-SELECT table_name
-  FROM information_schema.tables
- WHERE table_schema = 'public';
-]]
+local WARN = ngx.WARN
 local PROTECTED_TABLES = {
   schema_migrations = true,
   schema_meta       = true,
@@ -148,7 +143,10 @@ local function connect(config)
   end
 
   if connection.sock:getreusedtimes() == 0 then
-    ok, err = connection:query("SET TIME ZONE 'UTC';");
+    ok, err = connection:query(concat {
+      "SET SCHEMA ",    connection:escape_literal(config.schema), ";\n",
+      "SET TIME ZONE ", connection:escape_literal("UTC"), ";",
+    })
     if not ok then
       setkeepalive(connection)
       return nil, err
@@ -325,10 +323,11 @@ function _mt:infos()
   end
 
   return {
-    strategy = "PostgreSQL",
-    db_name  = self.config.database,
-    db_desc  = "database",
-    db_ver   = db_ver or "unknown",
+    strategy  = "PostgreSQL",
+    db_name   = self.config.database,
+    db_schema = self.config.schema,
+    db_desc   = "database",
+    db_ver    = db_ver or "unknown",
   }
 end
 
@@ -441,12 +440,15 @@ end
 
 
 function _mt:reset()
+  local schema = self:escape_identifier(self.config.schema)
   local user = self:escape_identifier(self.config.user)
+
   local ok, err = self:query(concat {
     "BEGIN;\n",
-    "  DROP SCHEMA IF EXISTS public CASCADE;\n",
-    "  CREATE SCHEMA IF NOT EXISTS public AUTHORIZATION ", user, ";\n",
-    "  GRANT ALL ON SCHEMA public TO ", user, ";\n",
+    "  DROP SCHEMA IF EXISTS ", schema ," CASCADE;\n",
+    "  CREATE SCHEMA IF NOT EXISTS ", schema, " AUTHORIZATION ", user, ";\n",
+    "  GRANT ALL ON SCHEMA ", schema ," TO ", user, ";\n",
+    "  SET SCHEMA ",  self:escape_literal(self.config.schema), ";\n",
     "COMMIT;",
   })
 
@@ -461,7 +463,13 @@ end
 function _mt:truncate()
   local i, table_names = 0, {}
 
-  for row in self:iterate(SQL_INFORMATION_SCHEMA_TABLES) do
+  local sql = concat {
+    "SELECT table_name\n",
+    "  FROM information_schema.tables\n",
+    " WHERE table_schema = ", self:escape_literal(self.config.schema), ";"
+  }
+
+  for row in self:iterate(sql) do
     local table_name = row.table_name
     if not PROTECTED_TABLES[table_name] then
       i = i + 1
@@ -501,7 +509,7 @@ end
 
 
 function _mt:setup_locks(_, _)
-  logger.verbose("creating 'locks' table if not existing...")
+  logger.debug("creating 'locks' table if not existing...")
 
   local ok, err = self:query([[
 BEGIN;
@@ -517,7 +525,7 @@ COMMIT;]])
     return nil, err
   end
 
-  logger.verbose("successfully created 'locks' table")
+  logger.debug("successfully created 'locks' table")
 
   return true
 end
@@ -598,8 +606,14 @@ function _mt:schema_migrations()
     error("no connection")
   end
 
+  local sql = concat {
+    "SELECT table_name\n",
+    "  FROM information_schema.tables\n",
+    " WHERE table_schema = ", self:escape_literal(self.config.schema), ";"
+  }
+
   local has_schema_meta_table
-  for row in self:iterate(SQL_INFORMATION_SCHEMA_TABLES) do
+  for row in self:iterate(sql) do
     local table_name = row.table_name
     if table_name == "schema_meta" then
       has_schema_meta_table = true
@@ -634,15 +648,37 @@ function _mt:schema_migrations()
 end
 
 
-function _mt:schema_bootstrap(kong_config, default_locks_ttl)
+function _mt:schema_bootstrap(_, default_locks_ttl)
   local conn = self:get_stored_connection()
   if not conn then
     error("no connection")
   end
 
+  -- create schema if not exists
+
+  logger.debug("creating '%s' schema if not existing...", self.config.schema)
+
+  local schema = self:escape_identifier(self.config.schema)
+  local user = self:escape_identifier(self.config.user)
+
+  local ok, err = self:query(concat {
+    "BEGIN;\n",
+    "  CREATE SCHEMA IF NOT EXISTS ", schema, " AUTHORIZATION ", user, ";\n",
+    "  GRANT ALL ON SCHEMA ", schema ," TO ", user, ";\n",
+    "  SET SCHEMA ",  self:escape_literal(self.config.schema), ";\n",
+    "COMMIT;",
+
+  })
+
+  if not ok then
+    return nil, err
+  end
+
+  logger.debug("successfully created '%s' schema", self.config.schema)
+
   -- create schema meta table if not exists
 
-  logger.verbose("creating 'schema_meta' table if not existing...")
+  logger.debug("creating 'schema_meta' table if not existing...")
 
   local res, err = self:query([[
     CREATE TABLE IF NOT EXISTS schema_meta (
@@ -659,7 +695,7 @@ function _mt:schema_bootstrap(kong_config, default_locks_ttl)
     return nil, err
   end
 
-  logger.verbose("successfully created 'schema_meta' table")
+  logger.debug("successfully created 'schema_meta' table")
 
   local ok
   ok, err = self:setup_locks(default_locks_ttl, true)
@@ -677,12 +713,15 @@ function _mt:schema_reset()
     error("no connection")
   end
 
+  local schema = self:escape_identifier(self.config.schema)
   local user = self:escape_identifier(self.config.user)
+
   local ok, err = self:query(concat {
     "BEGIN;\n",
-    "  DROP SCHEMA IF EXISTS public CASCADE;\n",
-    "  CREATE SCHEMA IF NOT EXISTS public AUTHORIZATION ", user, ";\n",
-    "  GRANT ALL ON SCHEMA public TO ", user, ";\n",
+    "  DROP SCHEMA IF EXISTS ", schema, " CASCADE;\n",
+    "  CREATE SCHEMA IF NOT EXISTS ", schema, " AUTHORIZATION ", user, ";\n",
+    "  GRANT ALL ON SCHEMA ", schema ," TO ", user, ";\n",
+    "  SET SCHEMA ",  self:escape_literal(self.config.schema), ";\n",
     "COMMIT;",
   })
 
@@ -995,6 +1034,7 @@ function _M.new(kong_config)
     user       = kong_config.pg_user,
     password   = kong_config.pg_password,
     database   = kong_config.pg_database,
+    schema     = kong_config.pg_schema or "public",
     ssl        = kong_config.pg_ssl,
     ssl_verify = kong_config.pg_ssl_verify,
     cafile     = kong_config.lua_ssl_trusted_certificate,

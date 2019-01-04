@@ -106,6 +106,8 @@ local CONF_INFERENCES = {
 
   database = { enum = { "postgres", "cassandra" }  },
   pg_port = { typ = "number" },
+  pg_database = { typ = "string" },
+  pg_schema = { typ = "string" },
   pg_timeout = { typ = "number" },
   pg_password = { typ = "string" },
   pg_ssl = { typ = "boolean" },
@@ -113,6 +115,7 @@ local CONF_INFERENCES = {
 
   cassandra_contact_points = { typ = "array" },
   cassandra_port = { typ = "number" },
+  cassandra_keyspace = { typ = "string" },
   cassandra_password = { typ = "string" },
   cassandra_timeout = { typ = "number" },
   cassandra_ssl = { typ = "boolean" },

@@ -1,6 +1,6 @@
 local DB      = require "kong.db"
 local helpers = require "spec.helpers"
-
+local utils   = require "kong.tools.utils"
 
 
 for _, strategy in helpers.each_strategy() do
@@ -35,6 +35,7 @@ for _, strategy in helpers.each_strategy() do
             strategy = "PostgreSQL",
             db_desc = "database",
             db_name = helpers.test_conf.pg_database,
+            db_schema = helpers.test_conf.pg_schema,
             db_ver  = "unknown",
           }, infos)
 
@@ -50,9 +51,32 @@ for _, strategy in helpers.each_strategy() do
           error("unknown database")
         end
       end)
+
+      if strategy == "postgres" then
+        it("initializes infos with custom schema", function()
+          local conf = utils.table_merge(helpers.test_conf)
+
+          conf.pg_schema = "demo"
+
+          local db, err = DB.new(conf, strategy)
+
+          assert.is_nil(err)
+          assert.is_table(db)
+
+          local infos = db.infos
+
+          assert.same({
+            strategy = "PostgreSQL",
+            db_desc = "database",
+            db_name = conf.pg_database,
+            db_schema = conf.pg_schema,
+            db_ver  = "unknown",
+          }, infos)
+
+        end)
+      end
     end)
   end)
-
 
   describe(":init_connector() [#" .. strategy .. "]", function()
     it("initializes infos", function()
@@ -68,12 +92,12 @@ for _, strategy in helpers.each_strategy() do
       assert.matches("^%d+%.?%d*%.?%d*$", infos.db_ver)
       assert.not_matches("%.$", infos.db_ver)
 
-
       if strategy == "postgres" then
         assert.same({
           strategy = "PostgreSQL",
           db_desc = "database",
           db_name = helpers.test_conf.pg_database,
+          db_schema = helpers.test_conf.pg_schema,
           db_ver  = infos.db_ver,
         }, infos)
 
@@ -90,19 +114,78 @@ for _, strategy in helpers.each_strategy() do
       end
     end)
 
-  end)
+    if strategy == "postgres" then
+      it("initializes infos with custom schema", function()
+        local conf = utils.table_merge(helpers.test_conf)
 
+        conf.pg_schema = "demo"
+
+        local db, err = DB.new(conf, strategy)
+
+        assert.is_nil(err)
+        assert.is_table(db)
+
+        assert(db:init_connector())
+
+        local infos = db.infos
+
+        assert.matches("^%d+%.?%d*%.?%d*$", infos.db_ver)
+        assert.not_matches("%.$", infos.db_ver)
+
+        assert.same({
+          strategy = "PostgreSQL",
+          db_desc = "database",
+          db_name = conf.pg_database,
+          db_schema = conf.pg_schema,
+          db_ver  = infos.db_ver,
+        }, infos)
+      end)
+    end
+  end)
 
   describe(":connect() [#" .. strategy .. "]", function()
+    if strategy == "postgres" then
+      it("connects to public schema by default", function()
+        local db, err = DB.new(helpers.test_conf, strategy)
 
+        assert.is_nil(err)
+        assert.is_table(db)
+        assert(db:init_connector())
+        assert(db:connect())
+
+        local res = assert(db.connector:query("SHOW search_path;"))
+
+        assert.is_table(res[1])
+        assert.equal("public", res[1]["search_path"])
+
+        assert(db:close())
+      end)
+
+      it("connects to custom schema when configured", function()
+        local conf = utils.table_merge(helpers.test_conf)
+
+        conf.pg_schema = "demo"
+
+        local db, err = DB.new(conf, strategy)
+
+        assert.is_nil(err)
+        assert.is_table(db)
+        assert(db:init_connector())
+        assert(db:connect())
+
+        local res = assert(db.connector:query("SHOW search_path;"))
+
+        assert.is_table(res[1])
+        assert.equal("demo", res[1]["search_path"])
+
+        assert(db:close())
+      end)
+    end
   end)
 
-
   describe(":setkeepalive() [#" .. strategy .. "]", function()
-
   end)
 
   describe(":close() [#" .. strategy .. "]", function()
-
   end)
 end
