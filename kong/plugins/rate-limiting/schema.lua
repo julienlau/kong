@@ -39,7 +39,7 @@ return {
           { limit_by = {
               type = "string",
               default = "consumer",
-              one_of = { "consumer", "credential", "ip" },
+              one_of = { "consumer", "credential", "ip", "global" },
           }, },
           { policy = {
               type = "string",
